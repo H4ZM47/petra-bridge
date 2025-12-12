@@ -3,7 +3,7 @@
   "name": "Petra Bridge",
   "version": "0.1.1",
   "minAppVersion": "1.4.0",
-  "description": "HTTP API bridge for Petra CLI - enables AI agents to interact with your vault",
+  "description": "HTTP API bridge for Petra CLI - enables AI agents to interact with your vault using CLI tools.",
   "author": "Alex Haslach",
   "authorUrl": "https://github.com/H4ZM47",
   "isDesktopOnly": true
