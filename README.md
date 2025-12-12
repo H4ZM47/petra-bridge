@@ -2,6 +2,17 @@
 
 An Obsidian plugin that exposes an HTTP API for the Petra CLI, enabling AI agents and automation tools to interact with your vault.
 
+## Using with Petra CLI
+
+This plugin is designed to work with the [Petra CLI](https://github.com/H4ZM47/petra-obsidian-cli). The CLI provides a convenient command-line interface for all API operations:
+
+```bash
+petra note list
+petra note search "query"
+petra note backlinks "path/to/note"
+petra graph neighbors "path/to/note"
+```
+
 ## Features
 
 - **HTTP API** - RESTful endpoints for vault operations
@@ -95,17 +106,6 @@ GET  /graph/neighbors/:path  # Get immediate neighbors
 GET  /templates            # List available templates
 POST /templates/:name/run  # Execute template
 Body: { "destination": "path/to/new-note", "variables": { "key": "value" } }
-```
-
-## Using with Petra CLI
-
-This plugin is designed to work with the [Petra CLI](https://github.com/H4ZM47/petra-bridge). The CLI provides a convenient command-line interface for all API operations:
-
-```bash
-petra note list
-petra note search "query"
-petra note backlinks "path/to/note"
-petra graph neighbors "path/to/note"
 ```
 
 ## Security
