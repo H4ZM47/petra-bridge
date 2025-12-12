@@ -1,6 +1,6 @@
 // Inlined shared types and constants from @petra/shared
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.2";
 
 /** Default port for petra-bridge HTTP server */
 export const DEFAULT_PORT = 27182;

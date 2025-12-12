@@ -73,7 +73,6 @@ export class PetraServer {
 
       this.server.on("error", reject);
       this.server.listen(DEFAULT_PORT, "127.0.0.1", () => {
-        console.log(`Petra server listening on http://127.0.0.1:${DEFAULT_PORT}`);
         resolve();
       });
     });

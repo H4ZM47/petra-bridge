@@ -1,5 +1,4 @@
 import { Plugin, Notice, FileSystemAdapter } from "obsidian";
-import { VERSION } from "./shared";
 import { PetraServer } from "./server";
 import { getOrCreateToken } from "./auth";
 import { registerNoteRoutes, registerDailyRoutes, registerSearchRoutes, registerTagRoutes, registerTemplateRoutes, registerLinkRoutes, registerGraphRoutes } from "./routes";
@@ -9,8 +8,6 @@ export default class PetraBridge extends Plugin {
   server: PetraServer | null = null;
 
   async onload() {
-    console.log(`Petra Bridge v${VERSION} loading...`);
-
     // Initialize server
     this.server = new PetraServer(this.app);
 
@@ -27,8 +24,6 @@ export default class PetraBridge extends Plugin {
     // Start server
     try {
       await this.server.start();
-      new Notice("Petra Bridge started");
-      console.log(`Petra Bridge v${VERSION} loaded and server running`);
     } catch (err) {
       console.error("Failed to start Petra server:", err);
       new Notice("Petra Bridge failed to start - check console");
@@ -38,9 +33,7 @@ export default class PetraBridge extends Plugin {
   async onunload() {
     if (this.server) {
       await this.server.stop();
-      console.log("Petra Bridge server stopped");
     }
-    console.log("Petra Bridge unloaded");
   }
 
   private registerRoutes(): void {
