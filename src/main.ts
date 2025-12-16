@@ -26,7 +26,7 @@ export default class PetraBridge extends Plugin {
       await this.server.start();
     } catch (err) {
       console.error("Failed to start Petra server:", err);
-      new Notice("Petra Bridge failed to start - check console");
+      new Notice("Petra bridge failed to start - check console");
     }
   }
 

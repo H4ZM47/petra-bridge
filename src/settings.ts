@@ -70,7 +70,7 @@ export class PetraSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     // Header
-    new Setting(containerEl).setName("Petra Bridge settings").setHeading();
+    new Setting(containerEl).setName("Server configuration").setHeading();
 
     // Bridge status
     const statusContainer = containerEl.createDiv({ cls: "petra-status" });
@@ -90,7 +90,7 @@ export class PetraSettingTab extends PluginSettingTab {
     if (!token) {
       new Setting(containerEl)
         .setName("Token status")
-        .setDesc("No token found. Click 'Generate token' to create one.")
+        .setDesc("No token found. Click the generate button to create one.")
         .setClass("petra-status-warning");
     } else {
       const validation = this.validateTokenFormat(token);
