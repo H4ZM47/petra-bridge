@@ -1,6 +1,6 @@
 import { App } from "obsidian";
 import { DEFAULT_PORT } from "./shared";
-import type { ApiResponse, ApiError } from "./shared";
+import type { ApiResponse, ApiError, ErrorCode } from "./shared";
 
 // Node's http is available in Obsidian desktop
 import * as http from "http";
@@ -51,7 +51,7 @@ export class PetraServer {
   /** Start the HTTP server */
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server = http.createServer(async (req, res) => {
+      this.server = http.createServer((req, res) => {
         // Set CORS headers
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
@@ -64,11 +64,9 @@ export class PetraServer {
           return;
         }
 
-        try {
-          await this.handleRequest(req, res);
-        } catch (err) {
+        this.handleRequest(req, res).catch((err) => {
           this.sendError(res, 500, "INTERNAL_ERROR", String(err));
-        }
+        });
       });
 
       this.server.on("error", reject);
@@ -178,7 +176,7 @@ export class PetraServer {
   ): void {
     res.setHeader("Content-Type", "application/json");
     res.writeHead(status);
-    const error: ApiError = { ok: false, error: { code: code as any, message } };
+    const error: ApiError = { ok: false, error: { code: code as ErrorCode, message } };
     res.end(JSON.stringify(error));
   }
 }

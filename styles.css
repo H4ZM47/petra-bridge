@@ -1,1 +1,26 @@
-/* Petra Bridge - No custom styles needed */
+/* Petra Bridge Settings Styles */
+.petra-status-ok { color: var(--text-success); }
+.petra-status-error { color: var(--text-error); }
+.petra-status-warning { color: var(--text-warning); }
+.petra-token-value { margin-top: 8px; }
+.petra-token-code {
+  display: block;
+  padding: 8px;
+  background: var(--background-secondary);
+  border-radius: 4px;
+  font-family: var(--font-monospace);
+  word-break: break-all;
+}
+.petra-help-content { margin-top: 8px; }
+.petra-help-content pre {
+  background: var(--background-secondary);
+  padding: 12px;
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.petra-help-content code {
+  font-family: var(--font-monospace);
+  font-size: 0.9em;
+}
+.petra-check { color: var(--text-success); }
+.petra-error { color: var(--text-error); }

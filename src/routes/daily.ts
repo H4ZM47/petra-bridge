@@ -11,13 +11,12 @@ interface DailyConfig {
 /** Get daily notes config from Obsidian settings */
 function getDailyConfig(app: App): DailyConfig {
   // Try to read from daily-notes plugin config
-  try {
-    const configPath = ".obsidian/daily-notes.json";
-    const configFile = app.vault.getAbstractFileByPath(configPath);
-    if (configFile instanceof TFile) {
-      // This is async but we need sync - use cached metadata instead
-    }
-  } catch {}
+  const configPath = `${app.vault.configDir}/daily-notes.json`;
+  const configFile = app.vault.getAbstractFileByPath(configPath);
+  if (configFile instanceof TFile) {
+    // Note: This is async but we need sync - fall through to defaults
+    // Future: could use app.vault.cachedRead or pre-load config
+  }
 
   // Return defaults
   return {

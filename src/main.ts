@@ -40,7 +40,7 @@ export default class PetraBridge extends Plugin {
     if (!this.server) return;
 
     // GET /vault - Return current vault info
-    this.server.route("GET", "/vault", async (_req, res, _params, _body) => {
+    this.server.route("GET", "/vault", (_req, res, _params, _body) => {
       const vault = this.app.vault;
       const adapter = vault.adapter;
       const basePath = adapter instanceof FileSystemAdapter ? adapter.basePath : "";
@@ -52,6 +52,7 @@ export default class PetraBridge extends Plugin {
           path: basePath,
         },
       });
+      return Promise.resolve();
     });
 
     // Register note routes

@@ -1,4 +1,4 @@
-import { App, TFile, TFolder } from "obsidian";
+import { App, TFile } from "obsidian";
 import { PetraServer } from "../server";
 import type { Note, NoteInfo, NoteFrontmatter } from "../shared";
 
@@ -131,9 +131,9 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
 
     const yamlLines = Object.entries(fm).map(([k, v]) => {
       if (Array.isArray(v)) {
-        return `${k}: [${v.join(", ")}]`;
+        return `${k}: [${(v as string[]).join(", ")}]`;
       }
-      return `${k}: ${v}`;
+      return `${k}: ${String(v)}`;
     });
 
     const fileContent = `---\n${yamlLines.join("\n")}\n---\n${content}`;
@@ -203,9 +203,9 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
 
     const yamlLines = Object.entries(newFm).map(([k, v]) => {
       if (Array.isArray(v)) {
-        return `${k}: [${v.join(", ")}]`;
+        return `${k}: [${(v as string[]).join(", ")}]`;
       }
-      return `${k}: ${v}`;
+      return `${k}: ${String(v)}`;
     });
 
     const newContent = `---\n${yamlLines.join("\n")}\n---\n${newBody}`;
@@ -225,7 +225,7 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
       return;
     }
 
-    await app.vault.trash(file, false); // Move to system trash
+    await app.fileManager.trashFile(file);
     server.sendJson(res, { ok: true, data: { deleted: params.path } });
   });
 

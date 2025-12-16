@@ -160,7 +160,7 @@ export function registerGraphRoutes(server: PetraServer, app: App): void {
   // GET /graph/neighbors/:path - Get immediate neighbors of a note
   server.route("GET", "/graph/neighbors/:path", async (req, res, params, _body) => {
     const url = new URL(req.url || "/", "http://localhost");
-    const depthParam = parseInt(url.searchParams.get("depth") || "1");
+    // Note: depth parameter reserved for future multi-hop neighbor queries
     const direction = (url.searchParams.get("direction") || "both") as "in" | "out" | "both";
 
     // Re-use the query logic by calling the route handler

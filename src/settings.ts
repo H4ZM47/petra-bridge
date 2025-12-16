@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, Notice } from "obsidian";
 import { randomBytes } from "crypto";
-import { existsSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, writeFileSync, readFileSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { CONFIG_DIR, TOKEN_FILE } from "./shared";
@@ -58,7 +58,6 @@ export class PetraSettingTab extends PluginSettingTab {
   private saveToken(token: string): void {
     const configDir = join(homedir(), CONFIG_DIR);
     if (!existsSync(configDir)) {
-      const { mkdirSync } = require("fs");
       mkdirSync(configDir, { recursive: true });
     }
 
@@ -71,34 +70,34 @@ export class PetraSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     // Header
-    containerEl.createEl("h2", { text: "Petra Bridge Settings" });
+    new Setting(containerEl).setName("Petra Bridge settings").setHeading();
 
     // Bridge status
     const statusContainer = containerEl.createDiv({ cls: "petra-status" });
     const serverRunning = this.plugin.server !== null;
 
     new Setting(statusContainer)
-      .setName("Bridge Status")
+      .setName("Bridge status")
       .setDesc(serverRunning ? "Server is running on port 27182" : "Server is not running")
       .setClass(serverRunning ? "petra-status-ok" : "petra-status-error");
 
     // Token section
-    containerEl.createEl("h3", { text: "Authentication Token" });
+    new Setting(containerEl).setName("Authentication token").setHeading();
 
     const token = this.getToken();
     const tokenPath = this.getTokenPath();
 
     if (!token) {
       new Setting(containerEl)
-        .setName("Token Status")
-        .setDesc("No token found. Click 'Generate Token' to create one.")
+        .setName("Token status")
+        .setDesc("No token found. Click 'Generate token' to create one.")
         .setClass("petra-status-warning");
     } else {
       const validation = this.validateTokenFormat(token);
 
       // Token display
       const tokenDisplay = new Setting(containerEl)
-        .setName("Current Token")
+        .setName("Current token")
         .setDesc(`Path: ${tokenPath}`)
         .addButton(button => button
           .setButtonText(this.showFullToken ? "Hide" : "Show Full")
@@ -126,7 +125,7 @@ export class PetraSettingTab extends PluginSettingTab {
 
       // Token validation status
       const validationSetting = new Setting(containerEl)
-        .setName("Token Validation")
+        .setName("Token validation")
         .setDesc(validation.message)
         .setClass(validation.valid ? "petra-status-ok" : "petra-status-error");
 
@@ -138,19 +137,19 @@ export class PetraSettingTab extends PluginSettingTab {
 
       // Token info
       new Setting(containerEl)
-        .setName("Token Information")
+        .setName("Token information")
         .setDesc(`Length: ${token.length} characters`);
     }
 
     // Token actions
-    containerEl.createEl("h3", { text: "Token Management" });
+    new Setting(containerEl).setName("Token management").setHeading();
 
     // Regenerate token
     new Setting(containerEl)
-      .setName("Generate New Token")
+      .setName("Generate new token")
       .setDesc("Create a new secure authentication token. This will replace the existing token.")
       .addButton(button => button
-        .setButtonText("Generate Token")
+        .setButtonText("Generate token")
         .setWarning()
         .onClick(() => {
           const newToken = this.regenerateToken();
@@ -168,7 +167,7 @@ export class PetraSettingTab extends PluginSettingTab {
     // Manual token input
     let manualTokenValue = "";
     new Setting(containerEl)
-      .setName("Set Token Manually")
+      .setName("Set token manually")
       .setDesc("For advanced users: manually set a specific token value")
       .addText(text => text
         .setPlaceholder("Enter token (min 20 characters)")
@@ -176,7 +175,7 @@ export class PetraSettingTab extends PluginSettingTab {
           manualTokenValue = value;
         }))
       .addButton(button => button
-        .setButtonText("Set Token")
+        .setButtonText("Set token")
         .onClick(() => {
           if (!manualTokenValue) {
             new Notice("Please enter a token value", 3000);
@@ -201,7 +200,7 @@ export class PetraSettingTab extends PluginSettingTab {
         }));
 
     // Help section
-    containerEl.createEl("h3", { text: "Usage" });
+    new Setting(containerEl).setName("Usage").setHeading();
 
     const helpEl = containerEl.createDiv({ cls: "petra-help-content" });
     helpEl.createEl("p", { text: "The token is used to authenticate API requests. Copy it and use in your CLI or automation tools:" });
@@ -209,34 +208,5 @@ export class PetraSettingTab extends PluginSettingTab {
     codeBlock.createEl("code", { text: `# Example: Check vault info
 curl -H "Authorization: Bearer <token>" http://localhost:27182/vault` });
 
-    // Add CSS
-    const style = containerEl.createEl("style");
-    style.textContent = `
-      .petra-status-ok { color: var(--text-success); }
-      .petra-status-error { color: var(--text-error); }
-      .petra-status-warning { color: var(--text-warning); }
-      .petra-token-value { margin-top: 8px; }
-      .petra-token-code {
-        display: block;
-        padding: 8px;
-        background: var(--background-secondary);
-        border-radius: 4px;
-        font-family: var(--font-monospace);
-        word-break: break-all;
-      }
-      .petra-help-content { margin-top: 8px; }
-      .petra-help-content pre {
-        background: var(--background-secondary);
-        padding: 12px;
-        border-radius: 4px;
-        overflow-x: auto;
-      }
-      .petra-help-content code {
-        font-family: var(--font-monospace);
-        font-size: 0.9em;
-      }
-      .petra-check { color: var(--text-success); }
-      .petra-error { color: var(--text-error); }
-    `;
   }
 }
