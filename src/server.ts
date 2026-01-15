@@ -1,9 +1,12 @@
 import { App } from "obsidian";
-import { DEFAULT_PORT } from "./shared";
+import { DEFAULT_PORT, VERSION } from "./shared";
 import type { ApiResponse, ApiError, ErrorCode } from "./shared";
 
 // Node's http is available in Obsidian desktop
 import * as http from "http";
+
+const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+const ROUTE_TIMEOUT = 30000; // 30 seconds
 
 export type RouteHandler = (
   req: http.IncomingMessage,
@@ -79,11 +82,25 @@ export class PetraServer {
   /** Stop the server */
   async stop(): Promise<void> {
     return new Promise((resolve) => {
-      if (this.server) {
-        this.server.close(() => resolve());
-      } else {
+      if (!this.server) {
         resolve();
+        return;
       }
+
+      // Stop accepting new connections
+      this.server.close(() => {
+        this.server = null;
+        resolve();
+      });
+
+      // Force close after 5 seconds
+      setTimeout(() => {
+        if (this.server) {
+          this.server.closeAllConnections?.();
+          this.server = null;
+        }
+        resolve();
+      }, 5000);
     });
   }
 
@@ -95,9 +112,18 @@ export class PetraServer {
     const path = url.pathname;
     const method = req.method || "GET";
 
-    // Health check - no auth required
+    // Health check - no auth required, no timeout
     if (path === "/health" && method === "GET") {
-      this.sendJson(res, { ok: true, data: { status: "healthy" } });
+      const vault = this.app.vault;
+      this.sendJson(res, {
+        ok: true,
+        data: {
+          status: "healthy",
+          version: VERSION,
+          vault: vault.getName(),
+          fileCount: vault.getMarkdownFiles().length,
+        },
+      });
       return;
     }
 
@@ -120,10 +146,31 @@ export class PetraServer {
         params[name] = decodeURIComponent(match[i + 1]);
       });
 
-      // Parse body for POST/PUT
-      const body = await this.parseBody(req);
+      // Parse body with size limit
+      let body: unknown;
+      try {
+        body = await this.parseBody(req);
+      } catch (err) {
+        if ((err as Error).message === "Request body too large") {
+          this.sendError(res, 413, "INTERNAL_ERROR", "Request body too large (max 10MB)");
+        } else {
+          this.sendError(res, 400, "INTERNAL_ERROR", "Failed to parse request body");
+        }
+        return;
+      }
 
-      await route.handler(req, res, params, body);
+      // Execute route with timeout
+      try {
+        await this.withTimeout(route.handler(req, res, params, body), ROUTE_TIMEOUT);
+      } catch (err) {
+        if ((err as Error).message === "Request timeout") {
+          if (!res.writableEnded) {
+            this.sendError(res, 504, "INTERNAL_ERROR", "Request timeout");
+          }
+        } else {
+          throw err;
+        }
+      }
       return;
     }
 
@@ -142,9 +189,20 @@ export class PetraServer {
   }
 
   private async parseBody(req: http.IncomingMessage): Promise<unknown> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      let size = 0;
       const chunks: Buffer[] = [];
-      req.on("data", (chunk) => chunks.push(chunk));
+
+      req.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > MAX_BODY_SIZE) {
+          req.destroy();
+          reject(new Error("Request body too large"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+
       req.on("end", () => {
         const body = Buffer.concat(chunks).toString();
         if (!body) {
@@ -157,6 +215,26 @@ export class PetraServer {
           resolve(body);
         }
       });
+
+      req.on("error", reject);
+    });
+  }
+
+  private withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error("Request timeout"));
+      }, ms);
+
+      promise
+        .then((value) => {
+          clearTimeout(timer);
+          resolve(value);
+        })
+        .catch((err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
     });
   }
 
