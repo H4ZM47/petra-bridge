@@ -2,14 +2,14 @@ import { App, TFile } from "obsidian";
 import { PetraServer } from "../server";
 
 interface GraphNode {
-  id: string;       // Note path without .md
+  id: string;
   title: string;
-  group?: string;   // Folder name for grouping
+  group?: string;
 }
 
 interface GraphEdge {
-  source: string;   // Path of source note
-  target: string;   // Path of target note
+  source: string;
+  target: string;
   type: "wiki" | "markdown";
 }
 
@@ -21,12 +21,12 @@ interface GraphResult {
 /** Register graph routes */
 export function registerGraphRoutes(server: PetraServer, app: App): void {
 
-  // POST /graph/query - Query the link graph
+  // POST /graph/query - Query the link graph (uses metadataCache)
   server.route("POST", "/graph/query", async (_req, res, _params, body) => {
     const {
-      from,           // Starting note path (optional)
-      depth = 1,      // How many hops to traverse
-      direction = "both"  // "in", "out", or "both"
+      from,
+      depth = 1,
+      direction = "both"
     } = body as {
       from?: string;
       depth?: number;
@@ -38,37 +38,15 @@ export function registerGraphRoutes(server: PetraServer, app: App): void {
     const visited = new Set<string>();
     const files = app.vault.getMarkdownFiles();
 
-    // Build a quick lookup of all files
+    // Build file lookup
     const fileMap = new Map<string, TFile>();
     for (const file of files) {
       fileMap.set(file.path, file);
       fileMap.set(file.basename, file);
+      fileMap.set(file.path.replace(/\.md$/, ""), file);
     }
 
-    // Helper to extract links from content
-    function extractLinks(content: string): Array<{ target: string; type: "wiki" | "markdown" }> {
-      const links: Array<{ target: string; type: "wiki" | "markdown" }> = [];
-
-      // Wikilinks
-      const wikiPattern = /\[\[([^\]|]+)(\|[^\]]+)?\]\]/g;
-      let match;
-      while ((match = wikiPattern.exec(content)) !== null) {
-        links.push({ target: match[1].trim(), type: "wiki" });
-      }
-
-      // Markdown links (exclude external)
-      const mdPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
-      while ((match = mdPattern.exec(content)) !== null) {
-        const href = match[2].trim();
-        if (!href.startsWith("http://") && !href.startsWith("https://")) {
-          links.push({ target: href.replace(/\.md$/, ""), type: "markdown" });
-        }
-      }
-
-      return links;
-    }
-
-    // Add a node to the graph
+    // Add a node
     function addNode(file: TFile) {
       const id = file.path.replace(/\.md$/, "");
       if (!nodes.has(id)) {
@@ -78,6 +56,23 @@ export function registerGraphRoutes(server: PetraServer, app: App): void {
           group: file.parent?.path || "",
         });
       }
+    }
+
+    // Get outgoing links using metadataCache
+    function getOutlinks(file: TFile): Array<{ target: TFile; type: "wiki" | "markdown" }> {
+      const results: Array<{ target: TFile; type: "wiki" | "markdown" }> = [];
+      const cache = app.metadataCache.getFileCache(file);
+
+      if (cache?.links) {
+        for (const link of cache.links) {
+          const resolved = app.metadataCache.getFirstLinkpathDest(link.link, file.path);
+          if (resolved instanceof TFile) {
+            results.push({ target: resolved, type: "wiki" });
+          }
+        }
+      }
+
+      return results;
     }
 
     // BFS traversal
@@ -90,20 +85,16 @@ export function registerGraphRoutes(server: PetraServer, app: App): void {
       if (!file) return;
 
       addNode(file);
-      const content = await app.vault.read(file);
       const fileId = file.path.replace(/\.md$/, "");
 
       // Outgoing links
       if (direction === "out" || direction === "both") {
-        const links = extractLinks(content);
-        for (const link of links) {
-          const targetFile = fileMap.get(link.target) || fileMap.get(link.target + ".md");
-          if (targetFile) {
-            addNode(targetFile);
-            const targetId = targetFile.path.replace(/\.md$/, "");
-            edges.push({ source: fileId, target: targetId, type: link.type });
-            await traverse(targetFile.path, currentDepth + 1);
-          }
+        const outlinks = getOutlinks(file);
+        for (const { target, type } of outlinks) {
+          addNode(target);
+          const targetId = target.path.replace(/\.md$/, "");
+          edges.push({ source: fileId, target: targetId, type });
+          await traverse(target.path, currentDepth + 1);
         }
       }
 
@@ -111,17 +102,23 @@ export function registerGraphRoutes(server: PetraServer, app: App): void {
       if (direction === "in" || direction === "both") {
         for (const otherFile of files) {
           if (otherFile.path === file.path) continue;
-          const otherContent = await app.vault.read(otherFile);
-          const links = extractLinks(otherContent);
 
-          for (const link of links) {
-            const resolvedFile = fileMap.get(link.target) || fileMap.get(link.target + ".md");
-            if (resolvedFile?.path === file.path) {
-              addNode(otherFile);
-              const sourceId = otherFile.path.replace(/\.md$/, "");
-              edges.push({ source: sourceId, target: fileId, type: link.type });
-              await traverse(otherFile.path, currentDepth + 1);
+          try {
+            const cache = app.metadataCache.getFileCache(otherFile);
+            if (!cache?.links) continue;
+
+            for (const link of cache.links) {
+              const resolved = app.metadataCache.getFirstLinkpathDest(link.link, otherFile.path);
+              if (resolved?.path === file.path) {
+                addNode(otherFile);
+                const sourceId = otherFile.path.replace(/\.md$/, "");
+                edges.push({ source: sourceId, target: fileId, type: "wiki" });
+                await traverse(otherFile.path, currentDepth + 1);
+                break;
+              }
             }
+          } catch (err) {
+            console.warn(`Failed to check links in ${otherFile.path}:`, err);
           }
         }
       }
@@ -133,44 +130,34 @@ export function registerGraphRoutes(server: PetraServer, app: App): void {
     } else {
       // No starting point - return entire graph (limited)
       for (const file of files.slice(0, 100)) {
-        addNode(file);
-        const content = await app.vault.read(file);
-        const fileId = file.path.replace(/\.md$/, "");
-        const links = extractLinks(content);
+        try {
+          addNode(file);
+          const fileId = file.path.replace(/\.md$/, "");
+          const outlinks = getOutlinks(file);
 
-        for (const link of links) {
-          const targetFile = fileMap.get(link.target) || fileMap.get(link.target + ".md");
-          if (targetFile) {
-            addNode(targetFile);
-            const targetId = targetFile.path.replace(/\.md$/, "");
-            edges.push({ source: fileId, target: targetId, type: link.type });
+          for (const { target, type } of outlinks) {
+            addNode(target);
+            const targetId = target.path.replace(/\.md$/, "");
+            edges.push({ source: fileId, target: targetId, type });
           }
+        } catch (err) {
+          console.warn(`Failed to process ${file.path}:`, err);
         }
       }
     }
 
     const result: GraphResult = {
       nodes: Array.from(nodes.values()),
-      edges: edges,
+      edges,
     };
 
     server.sendJson(res, { ok: true, data: result });
   });
 
-  // GET /graph/neighbors/:path - Get immediate neighbors of a note
+  // GET /graph/neighbors/:path - Get immediate neighbors (uses metadataCache)
   server.route("GET", "/graph/neighbors/:path", async (req, res, params, _body) => {
     const url = new URL(req.url || "/", "http://localhost");
-    // Note: depth parameter reserved for future multi-hop neighbor queries
     const direction = (url.searchParams.get("direction") || "both") as "in" | "out" | "both";
-
-    // Re-use the query logic by calling the route handler
-    // For simplicity, we'll duplicate the core logic
-    const files = app.vault.getMarkdownFiles();
-    const fileMap = new Map<string, TFile>();
-    for (const file of files) {
-      fileMap.set(file.path, file);
-      fileMap.set(file.basename, file);
-    }
 
     const normalizedPath = params.path.endsWith(".md") ? params.path : params.path + ".md";
     const centerFile = app.vault.getAbstractFileByPath(normalizedPath);
@@ -181,38 +168,50 @@ export function registerGraphRoutes(server: PetraServer, app: App): void {
     }
 
     const neighbors: Array<{ path: string; title: string; direction: "in" | "out" }> = [];
-    const content = await app.vault.read(centerFile);
+    const seen = new Set<string>();
 
-    // Extract wikilinks for outgoing
+    // Outgoing links using metadataCache
     if (direction === "out" || direction === "both") {
-      const wikiPattern = /\[\[([^\]|]+)(\|[^\]]+)?\]\]/g;
-      let match;
-      while ((match = wikiPattern.exec(content)) !== null) {
-        const target = match[1].trim();
-        const targetFile = fileMap.get(target) || fileMap.get(target + ".md");
-        if (targetFile) {
-          neighbors.push({
-            path: targetFile.path.replace(/\.md$/, ""),
-            title: targetFile.basename,
-            direction: "out",
-          });
+      const cache = app.metadataCache.getFileCache(centerFile);
+      if (cache?.links) {
+        for (const link of cache.links) {
+          const resolved = app.metadataCache.getFirstLinkpathDest(link.link, centerFile.path);
+          if (resolved instanceof TFile && !seen.has(resolved.path)) {
+            seen.add(resolved.path);
+            neighbors.push({
+              path: resolved.path.replace(/\.md$/, ""),
+              title: resolved.basename,
+              direction: "out",
+            });
+          }
         }
       }
     }
 
-    // Check all files for incoming links
+    // Incoming links (backlinks)
     if (direction === "in" || direction === "both") {
+      const files = app.vault.getMarkdownFiles();
       for (const file of files) {
-        if (file.path === centerFile.path) continue;
-        const fileContent = await app.vault.read(file);
+        if (file.path === centerFile.path || seen.has(file.path)) continue;
 
-        const wikiPattern = new RegExp(`\\[\\[${centerFile.basename}(\\|[^\\]]+)?\\]\\]`, "i");
-        if (wikiPattern.test(fileContent)) {
-          neighbors.push({
-            path: file.path.replace(/\.md$/, ""),
-            title: file.basename,
-            direction: "in",
-          });
+        try {
+          const cache = app.metadataCache.getFileCache(file);
+          if (!cache?.links) continue;
+
+          for (const link of cache.links) {
+            const resolved = app.metadataCache.getFirstLinkpathDest(link.link, file.path);
+            if (resolved?.path === centerFile.path) {
+              seen.add(file.path);
+              neighbors.push({
+                path: file.path.replace(/\.md$/, ""),
+                title: file.basename,
+                direction: "in",
+              });
+              break;
+            }
+          }
+        } catch (err) {
+          console.warn(`Failed to check links in ${file.path}:`, err);
         }
       }
     }
