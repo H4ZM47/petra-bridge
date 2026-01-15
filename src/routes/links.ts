@@ -1,71 +1,24 @@
 import { App, TFile } from "obsidian";
 import { PetraServer } from "../server";
-import type { NoteInfo, NoteFrontmatter } from "../shared";
+import type { NoteInfo } from "../shared";
+import { normalizePath, fileToNoteInfo, getContext } from "../utils";
 
 interface LinkInfo {
   path: string;
   title: string;
   exists: boolean;
-  context?: string; // Text around the link
+  context?: string;
 }
 
 interface BacklinkInfo extends NoteInfo {
   context: string;
 }
 
-/** Parse YAML frontmatter from content */
-function parseFrontmatter(content: string): NoteFrontmatter {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return {};
-
-  const frontmatter: NoteFrontmatter = {};
-  const lines = match[1].split("\n");
-
-  for (const line of lines) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-
-    const key = line.slice(0, colonIdx).trim();
-    let value = line.slice(colonIdx + 1).trim();
-
-    // Handle arrays like tags: [a, b, c]
-    if (value.startsWith("[") && value.endsWith("]")) {
-      frontmatter[key] = value.slice(1, -1).split(",").map(s => s.trim());
-    } else if (value) {
-      frontmatter[key] = value;
-    }
-  }
-
-  return frontmatter;
-}
-
-/** Normalize path - ensure .md extension */
-function normalizePath(path: string): string {
-  if (path.startsWith("/")) path = path.slice(1);
-  if (!path.endsWith(".md")) path += ".md";
-  return path;
-}
-
-/** Extract context around a link in content */
-function getContext(content: string, linkText: string, maxLen: number = 100): string {
-  const idx = content.indexOf(linkText);
-  if (idx === -1) return "";
-
-  const start = Math.max(0, idx - 30);
-  const end = Math.min(content.length, idx + linkText.length + 30);
-  let context = content.slice(start, end).replace(/\n/g, " ").trim();
-
-  if (start > 0) context = "..." + context;
-  if (end < content.length) context = context + "...";
-
-  return context;
-}
-
 /** Register link routes */
 export function registerLinkRoutes(server: PetraServer, app: App): void {
 
   // GET /notes/:path/backlinks - Notes linking TO this note
-  server.route("GET", "/notes/:path/backlinks", async (req, res, params, body) => {
+  server.route("GET", "/notes/:path/backlinks", async (_req, res, params, _body) => {
     const targetPath = normalizePath(params.path);
     const targetFile = app.vault.getAbstractFileByPath(targetPath);
 
@@ -79,38 +32,42 @@ export function registerLinkRoutes(server: PetraServer, app: App): void {
     const targetBasename = targetFile.basename;
 
     for (const file of files) {
-      if (file.path === targetPath) continue; // Skip self
+      if (file.path === targetPath) continue;
 
-      const content = await app.vault.read(file);
-      const fm = parseFrontmatter(content);
+      try {
+        // Use metadataCache to check for links first (fast)
+        const cache = app.metadataCache.getFileCache(file);
+        if (!cache?.links && !cache?.embeds) continue;
 
-      // Check for wikilinks [[target]] or [[target|alias]]
-      const wikiPattern = new RegExp(`\\[\\[${targetBasename}(\\|[^\\]]+)?\\]\\]`, "gi");
-      // Check for markdown links [text](path)
-      const mdPattern = new RegExp(`\\[([^\\]]+)\\]\\(${targetPath.replace(".md", "")}(\\.md)?\\)`, "gi");
-
-      const wikiMatch = content.match(wikiPattern);
-      const mdMatch = content.match(mdPattern);
-
-      if (wikiMatch || mdMatch) {
-        const linkText = wikiMatch?.[0] || mdMatch?.[0] || "";
-
-        backlinks.push({
-          path: file.path.replace(/\.md$/, ""),
-          title: (fm.title as string) || file.basename,
-          tags: (fm.tags as string[]) || [],
-          created: fm.created as string,
-          modified: fm.modified as string,
-          context: getContext(content, linkText),
+        // Check if any link points to our target
+        const allLinks = [...(cache.links || []), ...(cache.embeds || [])];
+        const hasLink = allLinks.some(link => {
+          const resolved = app.metadataCache.getFirstLinkpathDest(link.link, file.path);
+          return resolved?.path === targetPath;
         });
+
+        if (hasLink) {
+          // Only read content if we found a link (for context)
+          const content = await app.vault.read(file);
+          const linkMatch = content.match(new RegExp(`\\[\\[${targetBasename}(\\|[^\\]]+)?\\]\\]`, "i"));
+
+          const info = fileToNoteInfo(app, file, cache);
+          backlinks.push({
+            ...info,
+            context: linkMatch ? getContext(content, linkMatch[0]) : "",
+          });
+        }
+      } catch (err) {
+        console.warn(`Failed to check backlinks in ${file.path}:`, err);
+        continue;
       }
     }
 
     server.sendJson(res, { ok: true, data: backlinks });
   });
 
-  // GET /notes/:path/outlinks - Notes this note links TO
-  server.route("GET", "/notes/:path/outlinks", async (req, res, params, body) => {
+  // GET /notes/:path/outlinks - Notes this note links TO (uses resolvedLinks)
+  server.route("GET", "/notes/:path/outlinks", async (_req, res, params, _body) => {
     const sourcePath = normalizePath(params.path);
     const sourceFile = app.vault.getAbstractFileByPath(sourcePath);
 
@@ -119,49 +76,47 @@ export function registerLinkRoutes(server: PetraServer, app: App): void {
       return;
     }
 
-    const content = await app.vault.read(sourceFile);
     const outlinks: LinkInfo[] = [];
     const seen = new Set<string>();
 
-    // Extract wikilinks [[page]] or [[page|alias]]
-    const wikiPattern = /\[\[([^\]|]+)(\|[^\]]+)?\]\]/g;
-    let match;
-    while ((match = wikiPattern.exec(content)) !== null) {
-      const linkTarget = match[1].trim();
-      if (seen.has(linkTarget)) continue;
-      seen.add(linkTarget);
+    // Use metadataCache for links
+    const cache = app.metadataCache.getFileCache(sourceFile);
+    const content = await app.vault.read(sourceFile);
 
-      // Try to resolve the link
-      const resolved = app.metadataCache.getFirstLinkpathDest(linkTarget, sourcePath);
+    if (cache?.links) {
+      for (const link of cache.links) {
+        if (seen.has(link.link)) continue;
+        seen.add(link.link);
 
-      outlinks.push({
-        path: resolved ? resolved.path.replace(/\.md$/, "") : linkTarget,
-        title: resolved ? resolved.basename : linkTarget,
-        exists: resolved !== null,
-        context: getContext(content, match[0]),
-      });
+        const resolved = app.metadataCache.getFirstLinkpathDest(link.link, sourcePath);
+
+        outlinks.push({
+          path: resolved ? resolved.path.replace(/\.md$/, "") : link.link,
+          title: resolved ? resolved.basename : link.link,
+          exists: resolved !== null,
+          context: getContext(content, link.original),
+        });
+      }
     }
 
-    // Extract markdown links [text](path)
-    const mdPattern = /\[([^\]]+)\]\(([^)]+)\)/g;
-    while ((match = mdPattern.exec(content)) !== null) {
-      const linkPath = match[2].trim();
+    // Also check embeds
+    if (cache?.embeds) {
+      for (const embed of cache.embeds) {
+        if (seen.has(embed.link)) continue;
+        seen.add(embed.link);
 
-      // Skip external links
-      if (linkPath.startsWith("http://") || linkPath.startsWith("https://")) continue;
+        const resolved = app.metadataCache.getFirstLinkpathDest(embed.link, sourcePath);
 
-      if (seen.has(linkPath)) continue;
-      seen.add(linkPath);
-
-      const normalizedLink = linkPath.endsWith(".md") ? linkPath : linkPath + ".md";
-      const targetFile = app.vault.getAbstractFileByPath(normalizedLink);
-
-      outlinks.push({
-        path: linkPath.replace(/\.md$/, ""),
-        title: match[1] || linkPath,
-        exists: targetFile !== null,
-        context: getContext(content, match[0]),
-      });
+        // Only include markdown files
+        if (resolved && resolved.extension === "md") {
+          outlinks.push({
+            path: resolved.path.replace(/\.md$/, ""),
+            title: resolved.basename,
+            exists: true,
+            context: getContext(content, embed.original),
+          });
+        }
+      }
     }
 
     server.sendJson(res, { ok: true, data: outlinks });
