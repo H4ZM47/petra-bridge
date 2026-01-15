@@ -2,8 +2,9 @@ import { App } from "obsidian";
 import { DEFAULT_PORT, VERSION } from "./shared";
 import type { ApiResponse, ApiError, ErrorCode } from "./shared";
 
-// Node's http is available in Obsidian desktop
+// Node's http and crypto are available in Obsidian desktop
 import * as http from "http";
+import { timingSafeEqual } from "crypto";
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
 const ROUTE_TIMEOUT = 30000; // 30 seconds
@@ -55,10 +56,15 @@ export class PetraServer {
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
-        // Set CORS headers
-        res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        // Restrict CORS to Obsidian app and localhost origins only
+        // This prevents malicious websites from making cross-origin requests
+        const origin = req.headers.origin;
+        const allowedOrigins = ["app://obsidian.md", "http://localhost", "http://127.0.0.1"];
+        if (origin && allowedOrigins.some(allowed => origin.startsWith(allowed))) {
+          res.setHeader("Access-Control-Allow-Origin", origin);
+          res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+          res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        }
 
         // Handle preflight
         if (req.method === "OPTIONS") {
@@ -112,8 +118,17 @@ export class PetraServer {
     const path = url.pathname;
     const method = req.method || "GET";
 
-    // Health check - no auth required, no timeout
+    // Health check - minimal info without auth, full info with auth
     if (path === "/health" && method === "GET") {
+      // Basic health (no sensitive info) for unauthenticated requests
+      if (!this.checkAuth(req)) {
+        this.sendJson(res, {
+          ok: true,
+          data: { status: "healthy" },
+        });
+        return;
+      }
+      // Full health info only for authenticated requests
       const vault = this.app.vault;
       this.sendJson(res, {
         ok: true,
@@ -185,7 +200,17 @@ export class PetraServer {
     if (!authHeader) return false;
 
     const [type, token] = authHeader.split(" ");
-    return type === "Bearer" && token === this.authToken;
+    if (type !== "Bearer" || !token) return false;
+
+    // Use timing-safe comparison to prevent side-channel attacks
+    try {
+      const tokenBuf = Buffer.from(token, "utf8");
+      const authBuf = Buffer.from(this.authToken, "utf8");
+      if (tokenBuf.length !== authBuf.length) return false;
+      return timingSafeEqual(tokenBuf, authBuf);
+    } catch {
+      return false;
+    }
   }
 
   private async parseBody(req: http.IncomingMessage): Promise<unknown> {

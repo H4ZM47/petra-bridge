@@ -21,13 +21,19 @@ function getTemplatesFolder(app: App): string {
   return "Templates";
 }
 
+/** Escape special regex characters in user input */
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /** Simple template variable replacement */
 function processTemplate(content: string, variables: Record<string, string>): string {
   let processed = content;
 
-  // Replace {{variable}} patterns
+  // Replace {{variable}} patterns (escape key to prevent ReDoS)
   for (const [key, value] of Object.entries(variables)) {
-    const pattern = new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`, "g");
+    const escapedKey = escapeRegex(key);
+    const pattern = new RegExp(`\\{\\{\\s*${escapedKey}\\s*\\}\\}`, "g");
     processed = processed.replace(pattern, value);
   }
 

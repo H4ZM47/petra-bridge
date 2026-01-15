@@ -70,11 +70,36 @@ export function fileToNoteInfo(app: App, file: TFile, cache?: CachedMetadata | n
   };
 }
 
-/** Normalize path - ensure .md extension */
+/**
+ * Normalize path - ensure .md extension and prevent path traversal
+ * @throws Error if path contains traversal sequences
+ */
 export function normalizePath(path: string): string {
+  // Remove leading slashes
   if (path.startsWith("/")) path = path.slice(1);
-  if (!path.endsWith(".md")) path += ".md";
-  return path;
+
+  // Block path traversal sequences (critical security check)
+  if (path.includes("..") || path.includes("\\")) {
+    throw new Error("Invalid path: directory traversal not allowed");
+  }
+
+  // Block null bytes (path truncation attack)
+  if (path.includes("\0")) {
+    throw new Error("Invalid path: null bytes not allowed");
+  }
+
+  // Normalize segments and remove any . components
+  const segments = path.split("/").filter(s => s && s !== ".");
+  const normalized = segments.join("/");
+
+  if (!normalized) {
+    throw new Error("Invalid path: path cannot be empty");
+  }
+
+  if (!normalized.endsWith(".md")) {
+    return normalized + ".md";
+  }
+  return normalized;
 }
 
 /** Extract context around text in content */
