@@ -1,52 +1,7 @@
 import { App, TFile } from "obsidian";
 import { PetraServer } from "../server";
 import type { Note, NoteInfo, NoteFrontmatter } from "../shared";
-
-/** Parse YAML frontmatter from content */
-function parseFrontmatter(content: string): { frontmatter: NoteFrontmatter; body: string } {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!match) {
-    return { frontmatter: {}, body: content };
-  }
-
-  const yamlStr = match[1];
-  const body = match[2];
-
-  // Simple YAML parsing for common fields
-  const frontmatter: NoteFrontmatter = {};
-  const lines = yamlStr.split("\n");
-
-  for (const line of lines) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-
-    const key = line.slice(0, colonIdx).trim();
-    let value = line.slice(colonIdx + 1).trim();
-
-    // Handle arrays like tags: [a, b, c] or tags:\n  - a
-    if (value.startsWith("[") && value.endsWith("]")) {
-      frontmatter[key] = value.slice(1, -1).split(",").map(s => s.trim());
-    } else if (value) {
-      frontmatter[key] = value;
-    }
-  }
-
-  return { frontmatter, body };
-}
-
-/** Convert TFile to NoteInfo */
-async function fileToNoteInfo(app: App, file: TFile): Promise<NoteInfo> {
-  const content = await app.vault.read(file);
-  const { frontmatter } = parseFrontmatter(content);
-
-  return {
-    path: file.path.replace(/\.md$/, ""),
-    title: frontmatter.title as string || file.basename,
-    tags: (frontmatter.tags as string[]) || [],
-    created: frontmatter.created as string,
-    modified: frontmatter.modified as string,
-  };
-}
+import { parseFrontmatter, fileToNoteInfo, normalizePath, getFrontmatter } from "../utils";
 
 /** Convert TFile to full Note */
 async function fileToNote(app: App, file: TFile): Promise<Note> {
@@ -55,25 +10,18 @@ async function fileToNote(app: App, file: TFile): Promise<Note> {
 
   return {
     path: file.path.replace(/\.md$/, ""),
-    title: frontmatter.title as string || file.basename,
+    title: (frontmatter.title as string) || file.basename,
     content: body,
     frontmatter,
     raw,
   };
 }
 
-/** Normalize path - ensure .md extension */
-function normalizePath(path: string): string {
-  if (path.startsWith("/")) path = path.slice(1);
-  if (!path.endsWith(".md")) path += ".md";
-  return path;
-}
-
 /** Register note routes */
 export function registerNoteRoutes(server: PetraServer, app: App): void {
 
-  // GET /notes - List notes
-  server.route("GET", "/notes", async (req, res, params, body) => {
+  // GET /notes - List notes (uses metadataCache for speed)
+  server.route("GET", "/notes", async (req, res, _params, _body) => {
     const url = new URL(req.url || "/", "http://localhost");
     const folder = url.searchParams.get("folder");
     const limit = parseInt(url.searchParams.get("limit") || "100");
@@ -87,23 +35,29 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
       filtered = filtered.filter(f => f.path.startsWith(folder));
     }
 
-    // Get note info with frontmatter
+    // Get note info using metadataCache (fast!)
     const notes: NoteInfo[] = [];
-    for (const file of filtered.slice(0, limit * 2)) { // Get extra to filter by tag
-      const info = await fileToNoteInfo(app, file);
-
-      // Filter by tag if specified
-      if (tag && !info.tags.includes(tag)) continue;
-
-      notes.push(info);
+    for (const file of filtered) {
       if (notes.length >= limit) break;
+
+      try {
+        const info = fileToNoteInfo(app, file);
+
+        // Filter by tag if specified
+        if (tag && !info.tags.includes(tag)) continue;
+
+        notes.push(info);
+      } catch (err) {
+        console.warn(`Failed to process ${file.path}:`, err);
+        continue;
+      }
     }
 
     server.sendJson(res, { ok: true, data: notes });
   });
 
   // POST /notes - Create note
-  server.route("POST", "/notes", async (req, res, params, body) => {
+  server.route("POST", "/notes", async (_req, res, _params, body) => {
     const { path, content = "", frontmatter = {} } = body as {
       path: string;
       content?: string;
@@ -141,8 +95,8 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
     // Ensure parent folder exists
     const folderPath = normalizedPath.split("/").slice(0, -1).join("/");
     if (folderPath) {
-      const folder = app.vault.getAbstractFileByPath(folderPath);
-      if (!folder) {
+      const folderExists = app.vault.getAbstractFileByPath(folderPath);
+      if (!folderExists) {
         await app.vault.createFolder(folderPath);
       }
     }
@@ -154,7 +108,7 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
   });
 
   // GET /notes/:path - Read note
-  server.route("GET", "/notes/:path", async (req, res, params, body) => {
+  server.route("GET", "/notes/:path", async (_req, res, params, _body) => {
     const path = normalizePath(params.path);
     const file = app.vault.getAbstractFileByPath(path);
 
@@ -168,7 +122,7 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
   });
 
   // PUT /notes/:path - Update note
-  server.route("PUT", "/notes/:path", async (req, res, params, body) => {
+  server.route("PUT", "/notes/:path", async (_req, res, params, body) => {
     const path = normalizePath(params.path);
     const file = app.vault.getAbstractFileByPath(path);
 
@@ -216,7 +170,7 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
   });
 
   // DELETE /notes/:path - Delete note
-  server.route("DELETE", "/notes/:path", async (req, res, params, body) => {
+  server.route("DELETE", "/notes/:path", async (_req, res, params, _body) => {
     const path = normalizePath(params.path);
     const file = app.vault.getAbstractFileByPath(path);
 
@@ -230,7 +184,7 @@ export function registerNoteRoutes(server: PetraServer, app: App): void {
   });
 
   // POST /notes/:path/move - Move/rename note
-  server.route("POST", "/notes/:path/move", async (req, res, params, body) => {
+  server.route("POST", "/notes/:path/move", async (_req, res, params, body) => {
     const path = normalizePath(params.path);
     const file = app.vault.getAbstractFileByPath(path);
 
