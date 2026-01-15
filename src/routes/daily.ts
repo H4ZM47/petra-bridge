@@ -1,6 +1,7 @@
-import { App, TFile } from "obsidian";
+import { App, TFile, TFolder } from "obsidian";
 import { PetraServer } from "../server";
-import type { Note, NoteInfo, NoteFrontmatter } from "../shared";
+import type { Note, NoteInfo } from "../shared";
+import { parseFrontmatter, fileToNoteInfo } from "../utils";
 
 interface DailyConfig {
   format: string;
@@ -9,16 +10,7 @@ interface DailyConfig {
 }
 
 /** Get daily notes config from Obsidian settings */
-function getDailyConfig(app: App): DailyConfig {
-  // Try to read from daily-notes plugin config
-  const configPath = `${app.vault.configDir}/daily-notes.json`;
-  const configFile = app.vault.getAbstractFileByPath(configPath);
-  if (configFile instanceof TFile) {
-    // Note: This is async but we need sync - fall through to defaults
-    // Future: could use app.vault.cachedRead or pre-load config
-  }
-
-  // Return defaults
+function getDailyConfig(_app: App): DailyConfig {
   return {
     format: "YYYY-MM-DD",
     folder: "",
@@ -65,30 +57,6 @@ function parseDate(dateStr: string): Date | null {
   return null;
 }
 
-/** Parse frontmatter */
-function parseFrontmatter(content: string): { frontmatter: NoteFrontmatter; body: string } {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content };
-
-  const yamlStr = match[1];
-  const body = match[2];
-  const frontmatter: NoteFrontmatter = {};
-
-  for (const line of yamlStr.split("\n")) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-    const key = line.slice(0, colonIdx).trim();
-    let value = line.slice(colonIdx + 1).trim();
-    if (value.startsWith("[") && value.endsWith("]")) {
-      frontmatter[key] = value.slice(1, -1).split(",").map(s => s.trim());
-    } else if (value) {
-      frontmatter[key] = value;
-    }
-  }
-
-  return { frontmatter, body };
-}
-
 /** Convert file to Note */
 async function fileToNote(app: App, file: TFile): Promise<Note> {
   const raw = await app.vault.read(file);
@@ -107,7 +75,7 @@ async function fileToNote(app: App, file: TFile): Promise<Note> {
 export function registerDailyRoutes(server: PetraServer, app: App): void {
 
   // POST /daily - Create daily note
-  server.route("POST", "/daily", async (req, res, params, body) => {
+  server.route("POST", "/daily", async (_req, res, _params, body) => {
     const { date: dateStr = "today" } = body as { date?: string };
 
     const date = parseDate(dateStr);
@@ -123,8 +91,12 @@ export function registerDailyRoutes(server: PetraServer, app: App): void {
     // Check if exists
     const existing = app.vault.getAbstractFileByPath(notePath);
     if (existing instanceof TFile) {
-      const note = await fileToNote(app, existing);
-      server.sendJson(res, { ok: true, data: { note, created: false } });
+      try {
+        const note = await fileToNote(app, existing);
+        server.sendJson(res, { ok: true, data: { note, created: false } });
+      } catch (err) {
+        server.sendError(res, 500, "INTERNAL_ERROR", `Failed to read daily note: ${err}`);
+      }
       return;
     }
 
@@ -137,15 +109,18 @@ export function registerDailyRoutes(server: PetraServer, app: App): void {
     }
 
     // Create daily note
-    const content = `---\ncreated: ${new Date().toISOString()}\n---\n`;
-    const file = await app.vault.create(notePath, content);
-    const note = await fileToNote(app, file);
-
-    server.sendJson(res, { ok: true, data: { note, created: true } });
+    try {
+      const content = `---\ncreated: ${new Date().toISOString()}\n---\n`;
+      const file = await app.vault.create(notePath, content);
+      const note = await fileToNote(app, file);
+      server.sendJson(res, { ok: true, data: { note, created: true } });
+    } catch (err) {
+      server.sendError(res, 500, "INTERNAL_ERROR", `Failed to create daily note: ${err}`);
+    }
   });
 
   // GET /daily/:date - Get daily note
-  server.route("GET", "/daily/:date", async (req, res, params, body) => {
+  server.route("GET", "/daily/:date", async (_req, res, params, _body) => {
     const date = parseDate(params.date);
     if (!date) {
       server.sendError(res, 400, "INVALID_PATH", `Invalid date: ${params.date}`);
@@ -162,12 +137,16 @@ export function registerDailyRoutes(server: PetraServer, app: App): void {
       return;
     }
 
-    const note = await fileToNote(app, file);
-    server.sendJson(res, { ok: true, data: note });
+    try {
+      const note = await fileToNote(app, file);
+      server.sendJson(res, { ok: true, data: note });
+    } catch (err) {
+      server.sendError(res, 500, "INTERNAL_ERROR", `Failed to read daily note: ${err}`);
+    }
   });
 
-  // GET /daily - List recent daily notes
-  server.route("GET", "/daily", async (req, res, params, body) => {
+  // GET /daily - List recent daily notes (uses metadataCache)
+  server.route("GET", "/daily", async (req, res, _params, _body) => {
     const url = new URL(req.url || "/", "http://localhost");
     const limit = parseInt(url.searchParams.get("limit") || "7");
 
@@ -195,19 +174,14 @@ export function registerDailyRoutes(server: PetraServer, app: App): void {
     // Sort by date descending
     dailyNotes.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-    // Get note info
+    // Get note info using metadataCache
     const notes: NoteInfo[] = [];
     for (const { file } of dailyNotes.slice(0, limit)) {
-      const content = await app.vault.read(file);
-      const { frontmatter } = parseFrontmatter(content);
-
-      notes.push({
-        path: file.path.replace(/\.md$/, ""),
-        title: (frontmatter.title as string) || file.basename,
-        tags: (frontmatter.tags as string[]) || [],
-        created: frontmatter.created as string,
-        modified: frontmatter.modified as string,
-      });
+      try {
+        notes.push(fileToNoteInfo(app, file));
+      } catch (err) {
+        console.warn(`Failed to get info for ${file.path}:`, err);
+      }
     }
 
     server.sendJson(res, { ok: true, data: notes });
