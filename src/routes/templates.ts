@@ -1,6 +1,7 @@
 import { App, TFile, TFolder } from "obsidian";
 import { PetraServer } from "../server";
 import type { Note } from "../shared";
+import { parseFrontmatter } from "../utils";
 
 interface TemplateInfo {
   name: string;
@@ -9,8 +10,6 @@ interface TemplateInfo {
 
 /** Get templates folder from Obsidian settings */
 function getTemplatesFolder(app: App): string {
-  // Default Obsidian templates folder
-  // Could also check core-plugins/templates settings
   const possibleFolders = ["Templates", "templates", "_templates"];
 
   for (const folder of possibleFolders) {
@@ -19,7 +18,7 @@ function getTemplatesFolder(app: App): string {
     }
   }
 
-  return "Templates"; // Default
+  return "Templates";
 }
 
 /** Simple template variable replacement */
@@ -41,30 +40,6 @@ function processTemplate(content: string, variables: Record<string, string>): st
   return processed;
 }
 
-/** Parse frontmatter */
-function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
-  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
-  if (!match) return { frontmatter: {}, body: content };
-
-  const yamlStr = match[1];
-  const body = match[2];
-  const frontmatter: Record<string, unknown> = {};
-
-  for (const line of yamlStr.split("\n")) {
-    const colonIdx = line.indexOf(":");
-    if (colonIdx === -1) continue;
-    const key = line.slice(0, colonIdx).trim();
-    let value = line.slice(colonIdx + 1).trim();
-    if (value.startsWith("[") && value.endsWith("]")) {
-      frontmatter[key] = value.slice(1, -1).split(",").map(s => s.trim());
-    } else if (value) {
-      frontmatter[key] = value;
-    }
-  }
-
-  return { frontmatter, body };
-}
-
 /** Register template routes */
 export function registerTemplateRoutes(server: PetraServer, app: App): void {
 
@@ -82,13 +57,17 @@ export function registerTemplateRoutes(server: PetraServer, app: App): void {
 
     function scanFolder(f: TFolder, prefix: string = "") {
       for (const child of f.children) {
-        if (child instanceof TFile && child.extension === "md") {
-          templates.push({
-            name: prefix + child.basename,
-            path: child.path,
-          });
-        } else if (child instanceof TFolder) {
-          scanFolder(child, prefix + child.name + "/");
+        try {
+          if (child instanceof TFile && child.extension === "md") {
+            templates.push({
+              name: prefix + child.basename,
+              path: child.path,
+            });
+          } else if (child instanceof TFolder) {
+            scanFolder(child, prefix + child.name + "/");
+          }
+        } catch (err) {
+          console.warn(`Failed to scan ${child.path}:`, err);
         }
       }
     }
@@ -121,41 +100,45 @@ export function registerTemplateRoutes(server: PetraServer, app: App): void {
       return;
     }
 
-    // Read and process template
-    const templateContent = await app.vault.read(templateFile);
-    const processedContent = processTemplate(templateContent, {
-      title: destination.split("/").pop()?.replace(".md", "") || "",
-      ...variables,
-    });
+    try {
+      // Read and process template
+      const templateContent = await app.vault.read(templateFile);
+      const processedContent = processTemplate(templateContent, {
+        title: destination.split("/").pop()?.replace(".md", "") || "",
+        ...variables,
+      });
 
-    // Create destination
-    const destPath = destination.endsWith(".md") ? destination : destination + ".md";
+      // Create destination
+      const destPath = destination.endsWith(".md") ? destination : destination + ".md";
 
-    // Check if exists
-    if (app.vault.getAbstractFileByPath(destPath)) {
-      server.sendError(res, 409, "ALREADY_EXISTS", `Note already exists: ${destination}`);
-      return;
+      // Check if exists
+      if (app.vault.getAbstractFileByPath(destPath)) {
+        server.sendError(res, 409, "ALREADY_EXISTS", `Note already exists: ${destination}`);
+        return;
+      }
+
+      // Create parent folder if needed
+      const parentPath = destPath.split("/").slice(0, -1).join("/");
+      if (parentPath && !app.vault.getAbstractFileByPath(parentPath)) {
+        await app.vault.createFolder(parentPath);
+      }
+
+      // Create the note
+      const newFile = await app.vault.create(destPath, processedContent);
+
+      // Return the created note
+      const { frontmatter, body: noteBody } = parseFrontmatter(processedContent);
+      const note: Note = {
+        path: newFile.path.replace(/\.md$/, ""),
+        title: (frontmatter.title as string) || newFile.basename,
+        content: noteBody,
+        frontmatter,
+        raw: processedContent,
+      };
+
+      server.sendJson(res, { ok: true, data: note });
+    } catch (err) {
+      server.sendError(res, 500, "INTERNAL_ERROR", `Failed to execute template: ${err}`);
     }
-
-    // Create parent folder if needed
-    const parentPath = destPath.split("/").slice(0, -1).join("/");
-    if (parentPath && !app.vault.getAbstractFileByPath(parentPath)) {
-      await app.vault.createFolder(parentPath);
-    }
-
-    // Create the note
-    const newFile = await app.vault.create(destPath, processedContent);
-
-    // Return the created note
-    const { frontmatter, body: noteBody } = parseFrontmatter(processedContent);
-    const note: Note = {
-      path: newFile.path.replace(/\.md$/, ""),
-      title: (frontmatter.title as string) || newFile.basename,
-      content: noteBody,
-      frontmatter,
-      raw: processedContent,
-    };
-
-    server.sendJson(res, { ok: true, data: note });
   });
 }
